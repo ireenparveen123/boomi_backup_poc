@@ -1,0 +1,53 @@
+#!/bin/bash
+# =============================================
+# Script: deploy_component.sh
+# Description: Deploys a packaged Boomi component
+# =============================================
+
+set -e
+
+ACCOUNT_ID=$1
+USERNAME=$2
+API_TOKEN=$3
+ENVIRONMENT_ID=$4
+ENV_NAME=$5
+
+BASE_URL="https://api.boomi.com/api/rest/v1"
+
+# Read package ID from file
+PACKAGE_ID=$(cat package_id.txt)
+
+echo "=========================================="
+echo " Deploying Boomi Component"
+echo " Package ID   : $PACKAGE_ID"
+echo " Environment  : $ENV_NAME ($ENVIRONMENT_ID)"
+echo "=========================================="
+
+# Deploy Packaged Component
+RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+  -u "$USERNAME:$API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json" \
+  -d "{
+    \"environmentId\": \"$ENVIRONMENT_ID\",
+    \"packageId\": \"$PACKAGE_ID\",
+    \"notes\": \"Deployed via Azure Pipeline - $(date)\"
+  }" \
+  "$BASE_URL/$ACCOUNT_ID/DeployedPackage")
+
+HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
+BODY=$(echo "$RESPONSE" | head -n -1)
+
+echo "HTTP Status: $HTTP_STATUS"
+echo "Response: $BODY"
+
+if [ "$HTTP_STATUS" -ne 200 ] && [ "$HTTP_STATUS" -ne 201 ]; then
+  echo "ERROR: Deployment failed. HTTP Status: $HTTP_STATUS"
+  exit 1
+fi
+
+# Extract Deployment ID
+DEPLOYMENT_ID=$(echo "$BODY" | python3 -c "import sys, json; print(json.load(sys.stdin)['deployedPackageId'])")
+
+echo "SUCCESS: Deployed to $ENV_NAME. Deployment ID: $DEPLOYMENT_ID"
+echo "$DEPLOYMENT_ID" > deployment_id.txt
