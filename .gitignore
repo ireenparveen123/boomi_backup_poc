@@ -1,0 +1,17 @@
+# Ignore GitHub Actions runner
+actions-runner/
+
+# Ignore logs
+*.log
+
+# Ignore build folders
+build/
+dist/
+
+# Ignore IDE files
+.vscode/
+.idea/
+
+# Ignore OS files
+.DS_Store
+Thumbs.db
