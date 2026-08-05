@@ -1,0 +1,4 @@
+[2026-08-05 12:05:32Z INFO HostContext] No proxy settings were found based on environmental variables (http_proxy/https_proxy/HTTP_PROXY/HTTPS_PROXY)
+[2026-08-05 12:05:32Z INFO HostContext] Well known directory 'Bin': 'C:\Users\IreenParveen\Documents\boomi_backup_poc\actions-runner\bin'
+[2026-08-05 12:05:32Z INFO HostContext] Well known directory 'Root': 'C:\Users\IreenParveen\Documents\boomi_backup_poc\actions-runner'
+[2026-08-05 12:05:32Z INFO HostContext] Well known config file 'Credentials': 'C:\Users\IreenParveen\Documents\boomi_backup_poc\actions-runner\.credentials'

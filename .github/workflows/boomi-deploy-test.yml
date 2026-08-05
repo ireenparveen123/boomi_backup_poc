@@ -1,0 +1,198 @@
+# =============================================
+# GitHub Actions: Boomi Build & Deploy to Test
+# Trigger: Push to main branch
+# Runner: GitHub-Hosted (ubuntu-latest)
+# =============================================
+
+name: Boomi Build and Deploy to Test
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'README.md'
+      - 'docs/**'
+
+  # Allow manual trigger from GitHub UI
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Reason for manual deployment'
+        required: true
+        default: 'Manual deploy to Test'
+
+jobs:
+
+# ============================================
+# JOB 1: BUILD - Create Boomi Package
+# ============================================
+  build:
+    name: '🔨 Build - Create Boomi Package'
+    runs-on: [self-hosted, windows, boomi]       # GitHub-hosted runner
+
+    # Make package_id available to next job
+    outputs:
+      package_id: ${{ steps.create_package.outputs.package_id }}
+
+    steps:
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Display Build Info
+        run: |
+          echo "=================================================="
+          echo " 🔨 BUILD - Creating Boomi Package"
+          echo "=================================================="
+          echo "  Triggered by : ${{ github.actor }}"
+          echo "  Branch       : ${{ github.ref_name }}"
+          echo "  Commit SHA   : ${{ github.sha }}"
+          echo "  Run Number   : ${{ github.run_number }}"
+          echo "  Component ID : ${{ secrets.BOOMI_COMPONENT_ID }}"
+          echo ""
+
+      - name: Create Boomi Package via API
+        id: create_package
+        run: |
+          echo "Calling PackagedComponent API..."
+          echo ""
+
+          # Build version number from run number
+          VERSION="1.0.${{ github.run_number }}"
+          echo "Package Version: $VERSION"
+
+          # Call Boomi PackagedComponent API
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+            -u "${{ secrets.BOOMI_USERNAME }}:${{ secrets.BOOMI_API_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            -d "{
+              \"componentId\": \"${{ secrets.BOOMI_COMPONENT_ID }}\",
+              \"packageVersion\": \"$VERSION\",
+              \"notes\": \"Auto-packaged by GitHub Actions Run #${{ github.run_number }} - ${{ github.event.head_commit.message }}\"
+            }" \
+            "https://api.boomi.com/api/rest/v1/${{ secrets.BOOMI_ACCOUNT_ID }}/PackagedComponent")
+
+          # Split HTTP status and body
+          HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+
+          echo "HTTP Status : $HTTP_STATUS"
+          echo "Response    : $BODY"
+          echo ""
+
+          # Fail if not successful
+          if [ "$HTTP_STATUS" -ne 200 ] && [ "$HTTP_STATUS" -ne 201 ]; then
+            echo "❌ ERROR: Package creation failed with HTTP $HTTP_STATUS"
+            echo "Response: $BODY"
+            exit 1
+          fi
+
+          # Extract Package ID from response
+          PACKAGE_ID=$(echo "$BODY" | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          pkg_id = data.get('packageId') or data.get('id') or 'NOT_FOUND'
+          print(pkg_id)
+          ")
+
+          if [ -z "$PACKAGE_ID" ] || [ "$PACKAGE_ID" == "NOT_FOUND" ]; then
+            echo "❌ ERROR: Could not extract packageId"
+            echo "Full Response: $BODY"
+            exit 1
+          fi
+
+          echo "✅ Package Created! Package ID: $PACKAGE_ID"
+
+          # Set output variable for next job
+          echo "package_id=$PACKAGE_ID" >> $GITHUB_OUTPUT
+
+          # Also save to file as backup
+          echo "$PACKAGE_ID" > package_id.txt
+
+      - name: Upload Package ID as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: boomi-package-info
+          path: package_id.txt
+          retention-days: 5
+
+
+# ============================================
+# JOB 2: DEPLOY TO TEST
+# ============================================
+  deploy-test:
+    name: '🚀 Deploy to Test Environment'
+    runs-on: [self-hosted, windows, boomi]
+    needs: build                 # Wait for build job to complete
+    environment: Test            # Links to GitHub Environment (optional approval)
+
+    steps:
+
+      - name: Download Package ID Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: boomi-package-info
+
+      - name: Display Deploy Info
+        run: |
+          PACKAGE_ID=$(cat package_id.txt)
+          echo "=================================================="
+          echo " 🚀 DEPLOY TO TEST"
+          echo "=================================================="
+          echo "  Package ID     : $PACKAGE_ID"
+          echo "  Environment ID : ${{ secrets.BOOMI_TEST_ENV_ID }}"
+          echo "  Deployed by    : ${{ github.actor }}"
+          echo ""
+
+      - name: Deploy to Test via Boomi API
+        run: |
+          PACKAGE_ID=$(cat package_id.txt)
+
+          echo "Calling DeployedPackage API..."
+
+          # Call Boomi DeployedPackage API
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+            -u "${{ secrets.BOOMI_USERNAME }}:${{ secrets.BOOMI_API_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            -d "{
+              \"environmentId\": \"${{ secrets.BOOMI_TEST_ENV_ID }}\",
+              \"packageId\": \"$PACKAGE_ID\",
+              \"notes\": \"Deployed to TEST by GitHub Actions Run #${{ github.run_number }}\"
+            }" \
+            "https://api.boomi.com/api/rest/v1/${{ secrets.BOOMI_ACCOUNT_ID }}/DeployedPackage")
+
+          HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+
+          echo "HTTP Status : $HTTP_STATUS"
+          echo "Response    : $BODY"
+          echo ""
+
+          if [ "$HTTP_STATUS" -ne 200 ] && [ "$HTTP_STATUS" -ne 201 ]; then
+            echo "❌ ERROR: Deployment failed with HTTP $HTTP_STATUS"
+            echo "Response: $BODY"
+            exit 1
+          fi
+
+          echo "✅ Successfully Deployed to TEST!"
+
+      - name: Deployment Summary
+        run: |
+          echo ""
+          echo "╔══════════════════════════════════════════════╗"
+          echo "║   🎉 DEPLOYMENT TO TEST COMPLETE!            ║"
+          echo "╚══════════════════════════════════════════════╝"
+          echo ""
+          echo "  ✅ Package Created"
+          echo "  ✅ Deployed to Test Environment"
+          echo "  ✅ Build: #${{ github.run_number }}"
+          echo "  ✅ Actor: ${{ github.actor }}"
+          echo ""
+          echo "Next Steps:"
+          echo "  → Go to Boomi AtomSphere"
+          echo "  → Manage → Atom Management"
+          echo "  → Verify process is deployed in Test"
+          echo ""
