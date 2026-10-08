@@ -1,0 +1,50 @@
+{
+  "extensionGroupId": "",
+  "environmentId": "YOUR_TEST_ENV_ID",
+  "connections": {
+    "connection": [
+      {
+        "id": "YOUR_CONNECTION_COMPONENT_ID",
+        "field": [
+          {
+            "id": "url",
+            "value": "https://test-api.yourcompany.com"
+          },
+          {
+            "id": "username",
+            "value": "test_user"
+          }
+        ]
+      }
+    ]
+  },
+  "properties": {
+    "property": [
+      {
+        "name": "environment",
+        "value": "TEST"
+      },
+      {
+        "name": "api_base_url",
+        "value": "https://test-api.yourcompany.com"
+      }
+    ]
+  },
+  "processProperties": {
+    "ProcessProperty": [
+      {
+        "componentId": "YOUR_PROCESS_PROPERTY_COMPONENT_ID",
+        "ProcessPropertyValue": [
+          {
+            "key": "db_host",
+            "value": "test-db.yourcompany.com"
+          },
+          {
+            "key": "db_port",
+            "value": "5432"
+          }
+        ]
+      }
+    ]
+  }
+}

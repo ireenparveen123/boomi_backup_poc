@@ -1,0 +1,3 @@
+component_id,component_name,target_environment,requested_by,deploy_date,notes
+CMP-1042,Order_Sync_Process,UAT,jdoe,2026-10-08,Release 24.10
+CMP-2087,Customer_Import_Process,PROD,asmith,2026-10-10,

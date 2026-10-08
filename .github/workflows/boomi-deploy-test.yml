@@ -1,9 +1,3 @@
-# =============================================
-# GitHub Actions: Boomi Build & Deploy to Test
-# Trigger: Push to main branch
-# Runner: Self-hosted Windows with Git Bash
-# =============================================
-
 name: Boomi Build and Deploy to Test
 
 on:
@@ -22,24 +16,22 @@ on:
         default: 'Manual deploy to Test'
 
 jobs:
-
-# ============================================
-# JOB 1: BUILD - Create Boomi Package
-# ============================================
+  # ============================================================
+  # JOB 1: BUILD - Create Boomi Package
+  # ============================================================
   build:
-    name: '🔨 Build - Create Boomi Package'
+    name: 'Build - Create Boomi Package'
     runs-on: [self-hosted, windows, boomi]
 
     outputs:
       package_id: ${{ steps.create_package.outputs.package_id }}
 
     steps:
-
       - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: Display Build Info
-        shell: bash          # ← Use bash instead of powershell
+        shell: bash
         run: |
           echo "=================================================="
           echo " BUILD - Creating Boomi Package"
@@ -50,188 +42,54 @@ jobs:
           echo "  Run Number   : ${{ github.run_number }}"
           echo ""
 
-      - name: Create Boomi Package via API
-        id: create_package
-        shell: bash          # ← Use bash
+      - name: Read Component IDs from Deployment Details
+        id: read_component_ids
+        shell: bash
         run: |
-          echo "Calling PackagedComponent API..."
-          echo ""
+          echo "=================================================="
+          echo " Reading Component IDs from Deployment Details"
+          echo "=================================================="
 
-          # Build version number
-          VERSION="1.0.${{ github.run_number }}"
-          echo "Package Version: $VERSION"
+          # Repository-relative path to the deployment details file.
+          # Change only this filename if your actual file has a different name.
+          DEPLOYMENT_DETAILS_FILE="boomi_backup_poc/components/deployment_details.json"
 
-          # Store secrets in variables safely
-          USERNAME="${{ secrets.BOOMI_USERNAME }}"
-          API_TOKEN="${{ secrets.BOOMI_API_TOKEN }}"
-          ACCOUNT_ID="${{ secrets.BOOMI_ACCOUNT_ID }}"
-          COMPONENT_ID="${{ secrets.BOOMI_COMPONENT_ID }}"
+          if [ ! -f "$DEPLOYMENT_DETAILS_FILE" ]; then
+            echo "ERROR: Deployment details file not found:"
+            echo "       $DEPLOYMENT_DETAILS_FILE"
+            echo ""
+            echo "Files available under boomi_backup_poc/components:"
+            find boomi_backup_poc/components -maxdepth 2 -type f -print 2>/dev/null || true
+            exit 1
+          fi
 
-          echo "Account ID   : $ACCOUNT_ID"
-          echo "Component ID : $COMPONENT_ID"
-          echo ""
+          echo "Found: $DEPLOYMENT_DETAILS_FILE"
 
-          # Build JSON payload using python (avoids special char issues)
-          JSON_PAYLOAD=$(python3 -c "
+          # Extract every componentId from the deployment details JSON.
+          # Recursive search is used so componentId can be nested at any level.
+          python3 - "$DEPLOYMENT_DETAILS_FILE" <<'PY' > component_ids.txt
           import json
-          payload = {
-              'componentId': '$COMPONENT_ID',
-              'packageVersion': '$VERSION',
-              'notes': 'Auto-packaged by GitHub Actions Run #${{ github.run_number }}'
-          }
-          print(json.dumps(payload))
-          ")
+          import sys
 
-          echo "Request Payload: $JSON_PAYLOAD"
-          echo ""
+          file_path = sys.argv[1]
 
-          # Call Boomi PackagedComponent API
-          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
-            -u "$USERNAME:$API_TOKEN" \
-            -H "Content-Type: application/json" \
-            -H "Accept: application/json" \
-            -d "$JSON_PAYLOAD" \
-            "https://api.boomi.com/api/rest/v1/$ACCOUNT_ID/PackagedComponent")
+          with open(file_path, "r", encoding="utf-8") as f:
+              data = json.load(f)
 
-          # Split HTTP status and body
-          HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
-          BODY=$(echo "$RESPONSE" | head -n -1)
+          component_ids = []
 
-          echo "HTTP Status : $HTTP_STATUS"
-          echo "Response    : $BODY"
-          echo ""
+          def collect_component_ids(value):
+              if isinstance(value, dict):
+                  for key, child in value.items():
+                      if key.lower() == "componentid" and child:
+                          if isinstance(child, str):
+                              component_ids.append(child.strip())
+                          elif isinstance(child, (int, float)):
+                              component_ids.append(str(child))
+                      collect_component_ids(child)
 
-          # Fail if not successful
-          if [ "$HTTP_STATUS" -ne 200 ] && [ "$HTTP_STATUS" -ne 201 ]; then
-            echo "ERROR: Package creation failed with HTTP $HTTP_STATUS"
-            echo "Response: $BODY"
-            exit 1
-          fi
+              elif isinstance(value, list):
+                  for item in value:
+                      collect_component_ids(item)
 
-          # Extract Package ID from response
-          PACKAGE_ID=$(echo "$BODY" | python3 -c "
-          import sys, json
-          data = json.load(sys.stdin)
-          pkg_id = data.get('packageId') or data.get('id') or 'NOT_FOUND'
-          print(pkg_id)
-          ")
-
-          if [ -z "$PACKAGE_ID" ] || [ "$PACKAGE_ID" == "NOT_FOUND" ]; then
-            echo "ERROR: Could not extract packageId"
-            echo "Full Response: $BODY"
-            exit 1
-          fi
-
-          echo "Package Created! Package ID: $PACKAGE_ID"
-
-          # Set output for next job
-          echo "package_id=$PACKAGE_ID" >> $GITHUB_OUTPUT
-
-          # Save to file as backup
-          echo "$PACKAGE_ID" > package_id.txt
-          echo "Package ID saved to package_id.txt"
-
-      - name: Upload Package ID as Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: boomi-package-info
-          path: package_id.txt
-          retention-days: 5
-
-
-# ============================================
-# JOB 2: DEPLOY TO TEST
-# ============================================
-  deploy-test:
-    name: '🚀 Deploy to Test Environment'
-    runs-on: [self-hosted, windows, boomi]
-    needs: build
-
-    steps:
-
-      - name: Download Package ID Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: boomi-package-info
-
-      - name: Display Deploy Info
-        shell: bash          # ← Use bash
-        run: |
-          PACKAGE_ID=$(cat package_id.txt)
-          echo "=================================================="
-          echo " DEPLOY TO TEST"
-          echo "=================================================="
-          echo "  Package ID     : $PACKAGE_ID"
-          echo "  Deployed by    : ${{ github.actor }}"
-          echo ""
-
-      - name: Deploy to Test via Boomi API
-        shell: bash          # ← Use bash
-        run: |
-          PACKAGE_ID=$(cat package_id.txt | tr -d '[:space:]')
-
-          echo "Calling DeployedPackage API..."
-          echo "Package ID     : $PACKAGE_ID"
-          echo ""
-
-          # Store secrets safely
-          USERNAME="${{ secrets.BOOMI_USERNAME }}"
-          API_TOKEN="${{ secrets.BOOMI_API_TOKEN }}"
-          ACCOUNT_ID="${{ secrets.BOOMI_ACCOUNT_ID }}"
-          ENV_ID="${{ secrets.BOOMI_TEST_ENV_ID }}"
-
-          # Build JSON payload
-          JSON_PAYLOAD=$(python3 -c "
-          import json
-          payload = {
-              'environmentId': '$ENV_ID',
-              'packageId': '$PACKAGE_ID',
-              'notes': 'Deployed to TEST by GitHub Actions Run #${{ github.run_number }}'
-          }
-          print(json.dumps(payload))
-          ")
-
-          echo "Request Payload: $JSON_PAYLOAD"
-          echo ""
-
-          # Call Boomi DeployedPackage API
-          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
-            -u "$USERNAME:$API_TOKEN" \
-            -H "Content-Type: application/json" \
-            -H "Accept: application/json" \
-            -d "$JSON_PAYLOAD" \
-            "https://api.boomi.com/api/rest/v1/$ACCOUNT_ID/DeployedPackage")
-
-          HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
-          BODY=$(echo "$RESPONSE" | head -n -1)
-
-          echo "HTTP Status : $HTTP_STATUS"
-          echo "Response    : $BODY"
-          echo ""
-
-          if [ "$HTTP_STATUS" -ne 200 ] && [ "$HTTP_STATUS" -ne 201 ]; then
-            echo "ERROR: Deployment failed with HTTP $HTTP_STATUS"
-            echo "Response: $BODY"
-            exit 1
-          fi
-
-          echo "Successfully Deployed to TEST!"
-
-      - name: Deployment Summary
-        shell: bash          # ← Use bash
-        run: |
-          echo ""
-          echo "=================================================="
-          echo " DEPLOYMENT TO TEST COMPLETE!"
-          echo "=================================================="
-          echo ""
-          echo "  Package Created       : YES"
-          echo "  Deployed to Test      : YES"
-          echo "  Build Number          : ${{ github.run_number }}"
-          echo "  Triggered by          : ${{ github.actor }}"
-          echo ""
-          echo "Next Steps:"
-          echo "  Go to Boomi AtomSphere"
-          echo "  Manage - Atom Management"
-          echo "  Verify process is deployed in Test"
-          echo ""
+          collect_component_ids(data)
