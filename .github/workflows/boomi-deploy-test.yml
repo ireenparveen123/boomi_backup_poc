@@ -49,10 +49,10 @@ jobs:
           echo "  Commit SHA   : ${{ github.sha }}"
           echo "  Run Number   : ${{ github.run_number }}"
           echo ""
-          echo "  Components from deployment_details.csv:"
+          echo "  Components from components/deployment_details.csv:"
           python3 -c "
           import csv
-          with open('deployment_details.csv') as f:
+          with open('components/deployment_details.csv') as f:
               for row in csv.DictReader(f):
                   print(f\"    - {row['component_name']} ({row['component_id']})\")
           "
@@ -100,9 +100,13 @@ jobs:
 
             echo "Payload   : $JSON_PAYLOAD"
 
-          # Repository-relative path to the deployment details file.
-          # Change only this filename if your actual file has a different name.
-          DEPLOYMENT_DETAILS_FILE="components/deployment_details.csv"
+            # Call Boomi PackagedComponent API
+            RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+              -u "$USERNAME:$API_TOKEN" \
+              -H "Content-Type: application/json" \
+              -H "Accept: application/json" \
+              -d "$JSON_PAYLOAD" \
+              "https://api.boomi.com/api/rest/v1/$ACCOUNT_ID/PackagedComponent")
 
             HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
             BODY=$(echo "$RESPONSE" | head -n -1)
@@ -139,7 +143,7 @@ jobs:
 
           done < <(python3 -c "
           import csv
-          with open('deployment_details.csv') as f:
+          with open('components/deployment_details.csv') as f:
               for row in csv.DictReader(f):
                   print(row['component_id'] + '|' + row['component_name'])
           ")
