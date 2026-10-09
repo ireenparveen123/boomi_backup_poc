@@ -52,7 +52,7 @@ jobs:
 
           # Repository-relative path to the deployment details file.
           # Change only this filename if your actual file has a different name.
-          DEPLOYMENT_DETAILS_FILE="/components/deployment_details.csv"
+          DEPLOYMENT_DETAILS_FILE="components/deployment_details.csv"
 
           if [ ! -f "$DEPLOYMENT_DETAILS_FILE" ]; then
             echo "ERROR: Deployment details file not found:"
