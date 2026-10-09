@@ -81,21 +81,31 @@ jobs:
           PACKAGE_COUNT=0
           FAILED=0
 
-          # Parse CSV and loop over each component
+          # Total component count for progress display
+          TOTAL=$(python3 -c "
+import csv
+with open('components/deployment_details.csv', newline='') as f:
+    print(sum(1 for r in csv.DictReader(f) if r['component_id'].strip()))
+          ")
+
+          CURRENT=0
+
+          # Parse CSV and loop over each component (newline='' avoids CRLF issues on Windows)
           while IFS='|' read -r COMPONENT_ID COMPONENT_NAME; do
+            CURRENT=$((CURRENT + 1))
             echo "--------------------------------------------------"
-            echo "Component : $COMPONENT_NAME"
-            echo "ID        : $COMPONENT_ID"
+            echo "Component ($CURRENT/$TOTAL) : $COMPONENT_NAME"
+            echo "ID                        : $COMPONENT_ID"
 
             # Build JSON payload
             JSON_PAYLOAD=$(python3 -c "
-          import json
-          payload = {
-              'componentId': '$COMPONENT_ID',
-              'packageVersion': '$VERSION',
-              'notes': 'Auto-packaged by GitHub Actions Run #${{ github.run_number }}'
-          }
-          print(json.dumps(payload))
+import json
+payload = {
+    'componentId': '$COMPONENT_ID',
+    'packageVersion': '$VERSION',
+    'notes': 'Auto-packaged by GitHub Actions Run #${{ github.run_number }}'
+}
+print(json.dumps(payload))
             ")
 
             echo "Payload   : $JSON_PAYLOAD"
@@ -123,10 +133,10 @@ jobs:
 
             # Extract Package ID from response
             PACKAGE_ID=$(echo "$BODY" | python3 -c "
-          import sys, json
-          data = json.load(sys.stdin)
-          pkg_id = data.get('packageId') or data.get('id') or 'NOT_FOUND'
-          print(pkg_id)
+import sys, json
+data = json.load(sys.stdin)
+pkg_id = data.get('packageId') or data.get('id') or 'NOT_FOUND'
+print(pkg_id)
             ")
 
             if [ -z "$PACKAGE_ID" ] || [ "$PACKAGE_ID" == "NOT_FOUND" ]; then
@@ -191,7 +201,7 @@ jobs:
           echo " DEPLOY TO TEST"
           echo "=================================================="
           echo "  Deployed by    : ${{ github.actor }}"
-          echo "  Packages to deploy:"
+          echo "  Packages to deploy (${{ needs.build.outputs.package_count }} total):"
           while IFS='|' read -r PACKAGE_ID COMPONENT_NAME; do
             echo "    - $COMPONENT_NAME ($PACKAGE_ID)"
           done < package_ids.txt
@@ -211,22 +221,25 @@ jobs:
 
           DEPLOY_COUNT=0
           FAILED=0
+          TOTAL=$(wc -l < package_ids.txt | tr -d '[:space:]')
+          CURRENT=0
 
           while IFS='|' read -r PACKAGE_ID COMPONENT_NAME; do
             PACKAGE_ID=$(echo "$PACKAGE_ID" | tr -d '[:space:]')
+            CURRENT=$((CURRENT + 1))
             echo "--------------------------------------------------"
-            echo "Component  : $COMPONENT_NAME"
-            echo "Package ID : $PACKAGE_ID"
+            echo "Component ($CURRENT/$TOTAL) : $COMPONENT_NAME"
+            echo "Package ID               : $PACKAGE_ID"
 
             # Build JSON payload
             JSON_PAYLOAD=$(python3 -c "
-          import json
-          payload = {
-              'environmentId': '$ENV_ID',
-              'packageId': '$PACKAGE_ID',
-              'notes': 'Deployed to TEST by GitHub Actions Run #${{ github.run_number }}'
-          }
-          print(json.dumps(payload))
+import json
+payload = {
+    'environmentId': '$ENV_ID',
+    'packageId': '$PACKAGE_ID',
+    'notes': 'Deployed to TEST by GitHub Actions Run #${{ github.run_number }}'
+}
+print(json.dumps(payload))
             ")
 
             echo "Payload    : $JSON_PAYLOAD"
