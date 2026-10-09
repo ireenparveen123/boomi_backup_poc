@@ -49,13 +49,23 @@ jobs:
           echo "  Commit SHA   : ${{ github.sha }}"
           echo "  Run Number   : ${{ github.run_number }}"
           echo ""
-          echo "  Components from components/deployment_details.csv:"
-          python3 -c "
-          import csv
-          with open('components/deployment_details.csv') as f:
-              for row in csv.DictReader(f):
-                  print(f\"    - {row['component_name']} ({row['component_id']})\")
-          "
+
+          # Count and list components from CSV (skip header, skip blank lines)
+          LINENUM=0
+          while IFS=',' read -r comp_id comp_name rest; do
+            [ "$comp_id" = "component_id" ] && continue
+            [ -z "$(echo "$comp_id" | tr -d '[:space:]')" ] && continue
+            LINENUM=$((LINENUM + 1))
+          done < components/deployment_details.csv
+
+          echo "  Components to package ($LINENUM total):"
+          IDX=0
+          while IFS=',' read -r comp_id comp_name rest; do
+            [ "$comp_id" = "component_id" ] && continue
+            [ -z "$(echo "$comp_id" | tr -d '[:space:]')" ] && continue
+            IDX=$((IDX + 1))
+            echo "    [$IDX] $(echo "$comp_name" | tr -d '\r') ($(echo "$comp_id" | tr -d '[:space:]'))"
+          done < components/deployment_details.csv
           echo ""
 
       - name: Create Boomi Packages via API
@@ -82,31 +92,29 @@ jobs:
           FAILED=0
 
           # Total component count for progress display
-          TOTAL=$(python3 -c "
-import csv
-with open('components/deployment_details.csv', newline='') as f:
-    print(sum(1 for r in csv.DictReader(f) if r['component_id'].strip()))
-          ")
+          TOTAL=0
+          while IFS=',' read -r comp_id rest; do
+            [ "$comp_id" = "component_id" ] && continue
+            [ -z "$(echo "$comp_id" | tr -d '[:space:]')" ] && continue
+            TOTAL=$((TOTAL + 1))
+          done < components/deployment_details.csv
 
           CURRENT=0
 
-          # Parse CSV and loop over each component (newline='' avoids CRLF issues on Windows)
-          while IFS='|' read -r COMPONENT_ID COMPONENT_NAME; do
+          # Loop over each component row in the CSV (skip header and blank lines)
+          while IFS=',' read -r COMPONENT_ID COMPONENT_NAME rest; do
+            [ "$COMPONENT_ID" = "component_id" ] && continue
+            COMPONENT_ID=$(echo "$COMPONENT_ID" | tr -d '[:space:]')
+            [ -z "$COMPONENT_ID" ] && continue
+            COMPONENT_NAME=$(echo "$COMPONENT_NAME" | tr -d '\r')
+
             CURRENT=$((CURRENT + 1))
             echo "--------------------------------------------------"
             echo "Component ($CURRENT/$TOTAL) : $COMPONENT_NAME"
             echo "ID                        : $COMPONENT_ID"
 
             # Build JSON payload
-            JSON_PAYLOAD=$(python3 -c "
-import json
-payload = {
-    'componentId': '$COMPONENT_ID',
-    'packageVersion': '$VERSION',
-    'notes': 'Auto-packaged by GitHub Actions Run #${{ github.run_number }}'
-}
-print(json.dumps(payload))
-            ")
+            JSON_PAYLOAD="{\"componentId\":\"$COMPONENT_ID\",\"packageVersion\":\"$VERSION\",\"notes\":\"Auto-packaged by GitHub Actions Run #${{ github.run_number }}\"}"
 
             echo "Payload   : $JSON_PAYLOAD"
 
@@ -131,15 +139,10 @@ print(json.dumps(payload))
               continue
             fi
 
-            # Extract Package ID from response
-            PACKAGE_ID=$(echo "$BODY" | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-pkg_id = data.get('packageId') or data.get('id') or 'NOT_FOUND'
-print(pkg_id)
-            ")
+            # Extract Package ID from JSON response (single-line python, no indentation issue)
+            PACKAGE_ID=$(echo "$BODY" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('packageId') or d.get('id') or 'NOT_FOUND')")
 
-            if [ -z "$PACKAGE_ID" ] || [ "$PACKAGE_ID" == "NOT_FOUND" ]; then
+            if [ -z "$PACKAGE_ID" ] || [ "$PACKAGE_ID" = "NOT_FOUND" ]; then
               echo "ERROR: Could not extract packageId for $COMPONENT_NAME"
               FAILED=$((FAILED + 1))
               echo ""
@@ -151,12 +154,7 @@ print(pkg_id)
             PACKAGE_COUNT=$((PACKAGE_COUNT + 1))
             echo ""
 
-          done < <(python3 -c "
-          import csv
-          with open('components/deployment_details.csv') as f:
-              for row in csv.DictReader(f):
-                  print(row['component_id'] + '|' + row['component_name'])
-          ")
+          done < components/deployment_details.csv
 
           echo "=================================================="
           echo "Packages created : $PACKAGE_COUNT"
@@ -232,15 +230,7 @@ print(pkg_id)
             echo "Package ID               : $PACKAGE_ID"
 
             # Build JSON payload
-            JSON_PAYLOAD=$(python3 -c "
-import json
-payload = {
-    'environmentId': '$ENV_ID',
-    'packageId': '$PACKAGE_ID',
-    'notes': 'Deployed to TEST by GitHub Actions Run #${{ github.run_number }}'
-}
-print(json.dumps(payload))
-            ")
+            JSON_PAYLOAD="{\"environmentId\":\"$ENV_ID\",\"packageId\":\"$PACKAGE_ID\",\"notes\":\"Deployed to TEST by GitHub Actions Run #${{ github.run_number }}\"}"
 
             echo "Payload    : $JSON_PAYLOAD"
 
