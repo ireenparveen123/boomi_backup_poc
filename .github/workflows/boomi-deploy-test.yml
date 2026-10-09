@@ -49,14 +49,13 @@ jobs:
           echo "  Commit SHA   : ${{ github.sha }}"
           echo "  Run Number   : ${{ github.run_number }}"
           echo ""
-          python3 << 'PYEOF'
+          echo "  Components from components/deployment_details.csv:"
+          python3 -c "
           import csv
-          with open('components/deployment_details.csv', newline='') as f:
-              rows = [r for r in csv.DictReader(f) if r['component_id'].strip()]
-          print(f"  Components to package ({len(rows)} total):")
-          for i, row in enumerate(rows, 1):
-              print(f"    [{i}] {row['component_name'].strip()} ({row['component_id'].strip()})")
-          PYEOF
+          with open('components/deployment_details.csv') as f:
+              for row in csv.DictReader(f):
+                  print(f\"    - {row['component_name']} ({row['component_id']})\")
+          "
           echo ""
 
       - name: Create Boomi Packages via API
@@ -153,13 +152,10 @@ print(pkg_id)
             echo ""
 
           done < <(python3 -c "
-import csv
-with open('components/deployment_details.csv', newline='') as f:
-    for row in csv.DictReader(f):
-        cid = row['component_id'].strip()
-        cname = row['component_name'].strip()
-        if cid:
-            print(cid + '|' + cname)
+          import csv
+          with open('components/deployment_details.csv') as f:
+              for row in csv.DictReader(f):
+                  print(row['component_id'] + '|' + row['component_name'])
           ")
 
           echo "=================================================="
