@@ -100,13 +100,9 @@ jobs:
 
             echo "Payload   : $JSON_PAYLOAD"
 
-            # Call Boomi PackagedComponent API
-            RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
-              -u "$USERNAME:$API_TOKEN" \
-              -H "Content-Type: application/json" \
-              -H "Accept: application/json" \
-              -d "$JSON_PAYLOAD" \
-              "https://api.boomi.com/api/rest/v1/$ACCOUNT_ID/PackagedComponent")
+          # Repository-relative path to the deployment details file.
+          # Change only this filename if your actual file has a different name.
+          DEPLOYMENT_DETAILS_FILE="components/deployment_details.csv"
 
             HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
             BODY=$(echo "$RESPONSE" | head -n -1)
