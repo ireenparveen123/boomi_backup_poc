@@ -1,0 +1,404 @@
+# Boomi Update Environment Extensions
+
+
+---
+
+## `.github/workflows/boomi-update-extensions.yml`
+
+```yaml
+# =============================================
+# GitHub Actions: Boomi Update Environment Extensions
+# Trigger: Push to main (when extension_details.csv changes)
+#          or manual workflow_dispatch
+# Runner: Self-hosted Windows with Git Bash
+# CSV: components/extension_details.csv
+# =============================================
+
+name: Boomi Update Environment Extensions
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'components/extension_details.csv'
+
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Reason for extension update'
+        required: true
+        default: 'Manual extension update'
+
+jobs:
+
+# ============================================
+# JOB: UPDATE ENVIRONMENT EXTENSIONS
+# ============================================
+  update-extensions:
+    name: 'Update Environment Extensions'
+    runs-on: [self-hosted, windows, boomi]
+
+    steps:
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Display Extension Update Info
+        shell: bash
+        run: |
+          echo "=================================================="
+          echo " UPDATE ENVIRONMENT EXTENSIONS"
+          echo "=================================================="
+          echo "  Triggered by : ${{ github.actor }}"
+          echo "  Branch       : ${{ github.ref_name }}"
+          echo "  Commit SHA   : ${{ github.sha }}"
+          echo "  Run Number   : ${{ github.run_number }}"
+          echo "  Reason       : ${{ github.event.inputs.reason || 'Push to main' }}"
+          echo ""
+          echo "  Extensions CSV : extensions/extension_details.csv"
+          echo ""
+          echo "  Rows to process:"
+          ROWNUM=0
+          while IFS=',' read -r comp_id target_env ext_type ext_name field_name row_id field_value; do
+            [ "$comp_id" = "component_id" ] && continue
+            [ -z "$(echo "$comp_id" | tr -d '[:space:]')" ] && continue
+            ROWNUM=$((ROWNUM + 1))
+            echo "    [$ROWNUM] $(echo $comp_id | tr -d '\r[:space:]') | $target_env | $(echo $ext_type | tr -d '\r[:space:]') | $(echo $ext_name | tr -d '\r[:space:]').$(echo $field_name | tr -d '\r[:space:]')"
+          done < extensions/extension_details.csv
+          echo ""
+
+      - name: Build Extension Payloads
+        id: build_payloads
+        shell: bash
+        env:
+          # ---------------------------------------------------------------
+          # Map each SECRET:<name> in the CSV to a GitHub secret.
+          # Variable name must be the UPPERCASED secret_name from the CSV.
+          #   CSV value           -> env-var name   -> GitHub secret
+          #   SECRET:sap_uat_pwd  -> SAP_UAT_PWD    -> secrets.SAP_UAT_PWD
+          # ---------------------------------------------------------------
+          SAP_UAT_PWD: ${{ secrets.SAP_UAT_PWD }}
+          # Add more mappings below as needed:
+          # MY_OTHER_SECRET: ${{ secrets.MY_OTHER_SECRET }}
+        run: |
+          echo "Running payload builder..."
+          python3 extensions/build_extensions_payload.py extensions/extension_details.csv
+          echo ""
+          PAYLOAD_COUNT=$(wc -l < extension_payloads/manifest.txt | tr -d '[:space:]')
+          echo "payload_count=$PAYLOAD_COUNT" >> $GITHUB_OUTPUT
+          echo "Payload groups built: $PAYLOAD_COUNT"
+
+      - name: Update Extensions via Boomi API
+        shell: bash
+        run: |
+          echo "Calling EnvironmentExtensions API for each payload..."
+          echo ""
+
+          USERNAME="${{ secrets.BOOMI_USERNAME }}"
+          API_TOKEN="${{ secrets.BOOMI_API_TOKEN }}"
+          ACCOUNT_ID="${{ secrets.BOOMI_ACCOUNT_ID }}"
+
+          # Map logical environment names from the CSV to real Boomi environment IDs.
+          # Add an entry here for each target_environment value in the CSV.
+          declare -A ENV_ID_MAP
+          ENV_ID_MAP["UAT"]="${{ secrets.BOOMI_UAT_ENV_ID }}"
+          ENV_ID_MAP["TEST"]="${{ secrets.BOOMI_TEST_ENV_ID }}"
+          ENV_ID_MAP["PROD"]="${{ secrets.BOOMI_PROD_ENV_ID }}"
+          # ENV_ID_MAP["STAGING"]="${{ secrets.BOOMI_STAGING_ENV_ID }}"
+
+          TOTAL=$(wc -l < extension_payloads/manifest.txt | tr -d '[:space:]')
+          CURRENT=0
+          FAILED=0
+          SUCCESS=0
+
+          while IFS='|' read -r filename comp_id env_name; do
+            CURRENT=$((CURRENT + 1))
+            comp_id=$(echo "$comp_id" | tr -d '[:space:]')
+            env_name=$(echo "$env_name" | tr -d '\r[:space:]')
+            payload_file="extension_payloads/$filename"
+
+            echo "--------------------------------------------------"
+            echo "Update ($CURRENT/$TOTAL)"
+            echo "  Component  : $comp_id"
+            echo "  Environment: $env_name"
+            echo "  Payload    : $payload_file"
+
+            BOOMI_ENV_ID="${ENV_ID_MAP[$env_name]}"
+            if [ -z "$BOOMI_ENV_ID" ]; then
+              echo "  ERROR: No Boomi env ID mapped for '$env_name'"
+              echo "         Add BOOMI_${env_name}_ENV_ID to secrets and ENV_ID_MAP."
+              FAILED=$((FAILED + 1))
+              echo ""
+              continue
+            fi
+
+            # Inject the real environment ID into the payload
+            FINAL_PAYLOAD=$(python3 -c "
+import json
+with open('$payload_file') as f:
+    d = json.load(f)
+d['environmentId'] = '$BOOMI_ENV_ID'
+print(json.dumps(d))
+")
+
+            echo "  Env ID     : $BOOMI_ENV_ID"
+
+            RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+              -u "$USERNAME:$API_TOKEN" \
+              -H "Content-Type: application/json" \
+              -H "Accept: application/json" \
+              -d "$FINAL_PAYLOAD" \
+              "https://api.boomi.com/api/rest/v1/$ACCOUNT_ID/EnvironmentExtensions/update")
+
+            HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
+            BODY=$(echo "$RESPONSE" | head -n -1)
+
+            echo "  HTTP Status: $HTTP_STATUS"
+            echo "  Response   : $BODY"
+
+            if [ "$HTTP_STATUS" -ne 200 ] && [ "$HTTP_STATUS" -ne 201 ]; then
+              echo "  ERROR: Extension update failed for $comp_id / $env_name (HTTP $HTTP_STATUS)"
+              FAILED=$((FAILED + 1))
+              echo ""
+              continue
+            fi
+
+            echo "  Extensions updated: $comp_id -> $env_name"
+            SUCCESS=$((SUCCESS + 1))
+            echo ""
+
+          done < extension_payloads/manifest.txt
+
+          echo "=================================================="
+          echo "  Updated : $SUCCESS"
+          echo "  Failed  : $FAILED"
+          echo "  Total   : $TOTAL"
+          echo "=================================================="
+
+          if [ "$FAILED" -gt 0 ]; then
+            echo "ERROR: $FAILED extension update(s) failed."
+            exit 1
+          fi
+
+      - name: Summary
+        shell: bash
+        run: |
+          echo ""
+          echo "=================================================="
+          echo " ENVIRONMENT EXTENSIONS UPDATE COMPLETE!"
+          echo "=================================================="
+          echo ""
+          echo "  Groups Updated  : ${{ steps.build_payloads.outputs.payload_count }}"
+          echo "  Run Number      : ${{ github.run_number }}"
+          echo "  Triggered by    : ${{ github.actor }}"
+          echo ""
+          echo "Next Steps:"
+          echo "  Boomi AtomSphere -> Manage -> Environments"
+          echo "  Verify extensions are applied to the target environment(s)"
+          echo ""
+```
+
+---
+
+## `components/build_extensions_payload.py`
+
+```python
+#!/usr/bin/env python3
+"""
+Reads extension_details.csv and generates one Boomi EnvironmentExtensions
+JSON payload per unique (component_id, target_environment) group.
+
+Outputs:
+  extension_payloads/<component_id>__<environment>.json   (one per group)
+  extension_payloads/manifest.txt                         (filename|comp|env per line)
+
+SECRET: handling
+  field_value = SECRET:sap_uat_pwd  ->  os.environ["SAP_UAT_PWD"]
+  Missing env-var prints WARNING and leaves the placeholder so the API
+  call fails visibly rather than silently.
+"""
+
+import csv, json, os, sys
+from collections import defaultdict
+from pathlib import Path
+
+SECRET_PREFIX = "SECRET:"
+
+def resolve_value(raw):
+    raw = raw.strip()
+    if raw.startswith(SECRET_PREFIX):
+        key = raw[len(SECRET_PREFIX):].strip().upper()
+        val = os.environ.get(key)
+        if val is None:
+            print(f"  WARNING: env-var '{key}' not set — leaving placeholder")
+            return raw
+        return val
+    return raw
+
+def is_encrypted(raw):
+    return raw.strip().startswith(SECRET_PREFIX)
+
+def load_csv(path):
+    data = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+    with open(path, newline="", encoding="utf-8-sig") as fh:
+        for row in csv.DictReader(fh):
+            comp = row["component_id"].strip()
+            if not comp:
+                continue
+            data[(comp, row["target_environment"].strip())] \
+                [row["extension_type"].strip()] \
+                [row["extension_name"].strip()].append(row)
+    return data
+
+def build_process_properties(ext_map):
+    props = []
+    for name, rows in ext_map.items():
+        props.append({
+            "@type": "ProcessProperty", "name": name,
+            "ProcessPropertyValue": [
+                {"@type": "ProcessPropertyValue",
+                 "key": r["field_name"].strip(),
+                 "value": resolve_value(r["field_value"])} for r in rows
+            ]
+        })
+    return {"@type": "ProcessPropertyMap", "ProcessProperty": props}
+
+def build_dynamic_process_properties(ext_map):
+    dpp = []
+    for name, rows in ext_map.items():
+        for r in rows:
+            dpp.append({"@type": "DynamicProcessProperty",
+                        "name": name,
+                        "value": resolve_value(r["field_value"])})
+    return {"@type": "DynamicProcessPropertyMap", "DynamicProcessProperty": dpp}
+
+def build_connections(ext_map):
+    conns = []
+    for conn_id, rows in ext_map.items():
+        fields = []
+        for r in rows:
+            fe = {"@type": "OverrideConnectionField",
+                  "id":    r["field_name"].strip(),
+                  "value": resolve_value(r["field_value"])}
+            if is_encrypted(r["field_value"]):
+                fe["encryptedValueSet"] = True
+                fe["usesEncryption"]    = True
+            fields.append(fe)
+        conns.append({"@type": "OverrideConnection", "id": conn_id, "field": fields})
+    return {"@type": "ConnectionMap", "Connection": conns}
+
+def build_cross_references(ext_map):
+    xrefs = []
+    for xref_id, rows in ext_map.items():
+        row_groups = defaultdict(list)
+        for r in rows:
+            row_groups[int(r["row_id"].strip() or "1")].append(r)
+        xref_rows = []
+        for rnum in sorted(row_groups):
+            xref_rows.append({
+                "@type": "CrossReferenceRow", "rowNum": rnum,
+                "CrossReferenceRowData": [
+                    {"@type": "CrossReferenceRowData",
+                     "key":   r["field_name"].strip(),
+                     "value": resolve_value(r["field_value"])}
+                    for r in row_groups[rnum]
+                ]
+            })
+        xrefs.append({"@type": "CrossReferenceElement",
+                      "id": xref_id, "CrossReferenceRow": xref_rows})
+    return {"@type": "CrossReferenceMap", "CrossReference": xrefs}
+
+BUILDERS = {
+    "PROCESS_PROPERTY":         (build_process_properties,         "processProperties"),
+    "DYNAMIC_PROCESS_PROPERTY": (build_dynamic_process_properties, "dynamicProcessProperties"),
+    "CONNECTION":               (build_connections,                 "connections"),
+    "CROSS_REFERENCE":          (build_cross_references,            "crossReferences"),
+}
+
+def build_payload(comp_id, env, type_map):
+    payload = {"@type": "EnvironmentExtensions",
+               "extensionGroupId": comp_id,
+               "environmentId":    env}
+    for ext_type, ext_map in type_map.items():
+        if ext_type in BUILDERS:
+            fn, key = BUILDERS[ext_type]
+            payload[key] = fn(ext_map)
+        else:
+            print(f"  WARNING: Unknown extension_type '{ext_type}' — skipped")
+    return payload
+
+def main():
+    csv_path = sys.argv[1] if len(sys.argv) > 1 else "components/extension_details.csv"
+    if not os.path.exists(csv_path):
+        print(f"ERROR: {csv_path} not found"); sys.exit(1)
+
+    out_dir = Path("extension_payloads")
+    out_dir.mkdir(exist_ok=True)
+
+    data = load_csv(csv_path)
+    print(f"Processing {len(data)} group(s)...\n")
+
+    manifest_lines = []
+    for (comp_id, env), type_map in data.items():
+        print(f"  Component: {comp_id}  Env: {env}")
+        for et, em in type_map.items():
+            print(f"    {et}: {list(em.keys())}")
+
+        fname = f"{comp_id}__{env}.json".replace("/", "_").replace(" ", "_")
+        with open(out_dir / fname, "w", encoding="utf-8") as fh:
+            json.dump(build_payload(comp_id, env, type_map), fh, indent=2)
+        print(f"  -> {out_dir / fname}\n")
+        manifest_lines.append(f"{fname}|{comp_id}|{env}")
+
+    with open(out_dir / "manifest.txt", "w") as fh:
+        fh.write("\n".join(manifest_lines) + "\n")
+
+    print(f"Done. {len(data)} payload(s) written.")
+
+if __name__ == "__main__":
+    main()
+```
+
+---
+
+## Secrets required
+
+| Secret | Purpose |
+|---|---|
+| `BOOMI_USERNAME` | API auth (shared with deploy workflow) |
+| `BOOMI_API_TOKEN` | API auth (shared with deploy workflow) |
+| `BOOMI_ACCOUNT_ID` | Boomi account ID |
+| `BOOMI_UAT_ENV_ID` | Real Boomi environment ID for UAT |
+| `BOOMI_TEST_ENV_ID` | Real Boomi environment ID for TEST |
+| `BOOMI_PROD_ENV_ID` | Real Boomi environment ID for PROD |
+| `SAP_UAT_PWD` | Resolves `SECRET:sap_uat_pwd` in the CSV |
+
+## How `SECRET:` values work
+
+Any `field_value` starting with `SECRET:` is a secret reference:
+```
+SECRET:sap_uat_pwd  ->  uppercased  ->  SAP_UAT_PWD  ->  ${{ secrets.SAP_UAT_PWD }}
+```
+To add a new secret field: put `SECRET:my_secret_name` in the CSV, then add one line to the `env:` block of the **Build Extension Payloads** step:
+```yaml
+MY_SECRET_NAME: ${{ secrets.MY_SECRET_NAME }}
+```
+
+## How Cross-Reference rows are grouped
+
+Rows with the same `extension_name` and `row_id` merge into one `CrossReferenceRow`.
+
+```
+CountryCodeXref, source_country, 1, IN     -> row 1, col source_country
+CountryCodeXref, target_country, 1, India  -> row 1, col target_country
+CountryCodeXref, source_country, 2, US     -> row 2, col source_country
+CountryCodeXref, target_country, 2, ...    -> row 2, col target_country
+```
+
+## Trigger behaviour
+
+| Event | When it runs |
+|---|---|
+| Push to `main` | Only when `extensions/extension_details.csv` is changed |
+| `workflow_dispatch` | Manually from the Actions tab |
